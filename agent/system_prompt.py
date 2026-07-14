@@ -423,6 +423,16 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # ── Volatile tier (changes per session/turn — never cached) ───
     volatile_parts: List[str] = []
 
+    # ── Enforce governance layer (above memory) ───
+    try:
+        from agent.prompt_builder import build_enforce_block
+        enforce_block = build_enforce_block()
+        if enforce_block:
+            volatile_parts.append(enforce_block)
+    except Exception:
+        pass
+
+
     if agent._memory_store:
         if agent._memory_enabled:
             mem_block = agent._memory_store.format_for_system_prompt("memory")

@@ -8,6 +8,7 @@ import json
 import logging
 import os
 import threading
+import functools
 import contextvars
 from collections import OrderedDict
 from pathlib import Path
@@ -1681,6 +1682,77 @@ def build_skills_system_prompt(
             _SKILLS_PROMPT_CACHE.popitem(last=False)
 
     return result
+
+
+# ── Enforce block builder ────────────────────────────────────────────────
+
+
+@functools.lru_cache(maxsize=1)
+def build_enforce_block(
+    skills_dir: Optional[Path] = None,
+    external_dirs: Optional[list[Path]] = None,
+) -> str:
+    """Build a YOU-MUST enforce directive block from all installed skills.
+    
+    Scans every SKILL.md for an ``enforce:`` frontmatter key and assembles
+    all rules into a governance block positioned above memory in the system
+    prompt. Returns empty string when no enforce rules exist.
+    """
+    if skills_dir is None:
+        skills_dir = get_skills_dir()
+    if external_dirs is None:
+        external_dirs = get_all_skills_dirs()[1:]
+
+    all_dirs = [skills_dir] + (external_dirs or [])
+    rules: list[dict] = []
+    seen: set[str] = set()
+
+    for sd in all_dirs:
+        if not sd.exists():
+            continue
+        for skill_md in sd.rglob("SKILL.md"):
+            try:
+                if is_excluded_skill_path(skill_md):
+                    continue
+                raw = skill_md.read_text(encoding="utf-8")
+                fm, _ = parse_frontmatter(raw)
+                if not isinstance(fm, dict):
+                    continue
+                skill_rules = fm.get("enforce", [])
+                if not isinstance(skill_rules, list):
+                    continue
+                for rule in skill_rules:
+                    rule_text = rule.get("rule", "")
+                    if rule_text and rule_text not in seen:
+                        seen.add(rule_text)
+                        rules.append(rule)
+            except Exception:
+                continue
+
+    if not rules:
+        return ""
+
+    lines = [
+        "═══ ENFORCE RULES — Governance Layer ═══",
+    ]
+    _PRIO_ORDER = {"critical": 0, "high": 1, "medium": 2, "low": 3}
+    rules.sort(key=lambda r: _PRIO_ORDER.get(r.get("priority", "medium"), 99))
+
+    for r in rules:
+        p = r.get("priority", "high").upper()
+        rule = r.get("rule", "")
+        pol = r.get("policy", {})
+        lines.append(f"  [{p}] {rule}")
+        tool = pol.get("tool", "")
+        pattern = pol.get("pattern", "")
+        reason = pol.get("reason", "")
+        if tool or pattern:
+            lines.append(f"       tool={tool} | when={pattern}")
+        if reason:
+            lines.append(f"       → {reason}")
+
+    lines.append("═══════════════════════════════════════════")
+    return "\n".join(lines)
 
 
 def build_nous_subscription_prompt(valid_tool_names: "set[str] | None" = None) -> str:
